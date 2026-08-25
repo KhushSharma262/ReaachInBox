@@ -1,4 +1,4 @@
-import type Redis from 'ioredis';
+﻿import type Redis from 'ioredis';
 import logger from './logger';
 
 /**
@@ -7,14 +7,14 @@ import logger from './logger';
  * Key strategy: rate:{userId}:{hourEpoch}
  *   - hourEpoch = Math.floor(Date.now() / 3600000)
  *   - Key expires automatically after 1 hour
- *   - INCR is atomic → safe with multiple concurrent workers
+ *   - INCR is atomic â†’ safe with multiple concurrent workers
  *
  * The Lua script atomically:
  *   1. INCRements the counter
  *   2. Sets TTL on first increment (avoids race between INCR and EXPIRE)
  *   3. Returns the new count
  *
- * If count > limit → the caller is responsible for rescheduling the job.
+ * If count > limit â†’ the caller is responsible for rescheduling the job.
  * We DECR the counter if we decide not to send (to keep count accurate).
  */
 
@@ -40,8 +40,8 @@ function getHourEpoch(): number {
   return Math.floor(Date.now() / 3_600_000);
 }
 
-function getRateLimitKey(userId: string): string {
-  return `rate:${userId}:${getHourEpoch()}`;
+function getRateLimitKey(campaignId: string): string {
+  return `rate:${campaignId}:${getHourEpoch()}`;
 }
 
 /**
@@ -51,10 +51,10 @@ function getRateLimitKey(userId: string): string {
  */
 export async function checkAndIncrementRateLimit(
   redis: Redis,
-  userId: string,
+  campaignId: string,
   maxPerHour: number,
 ): Promise<boolean> {
-  const key = getRateLimitKey(userId);
+  const key = getRateLimitKey(campaignId);
   const ttlSeconds = 3600; // 1 hour
 
   const result = await redis.eval(
@@ -66,11 +66,11 @@ export async function checkAndIncrementRateLimit(
   ) as number;
 
   if (result === 0) {
-    logger.debug({ userId, maxPerHour }, 'Rate limit reached');
+    logger.debug({ campaignId, maxPerHour }, 'Rate limit reached');
     return false;
   }
 
-  logger.debug({ userId, currentCount: result, maxPerHour }, 'Rate limit ok');
+  logger.debug({ campaignId, currentCount: result, maxPerHour }, 'Rate limit ok');
   return true;
 }
 
@@ -90,9 +90,9 @@ export function msUntilNextHourWindow(): number {
  */
 export async function getCurrentHourCount(
   redis: Redis,
-  userId: string,
+  campaignId: string,
 ): Promise<number> {
-  const key = getRateLimitKey(userId);
+  const key = getRateLimitKey(campaignId);
   const value = await redis.get(key);
   return value ? parseInt(value, 10) : 0;
 }

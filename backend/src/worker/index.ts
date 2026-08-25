@@ -1,124 +1,93 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import { Worker, Job } from 'bullmq';
 import { config } from '../config';
-import { createRedisClient } from '../lib/redis';
+import { createRedisClient, getRedis } from '../lib/redis';
 import { QUEUE_NAME, EmailJobData, scheduleEmailJob } from '../lib/queue';
 import { checkAndIncrementRateLimit, msUntilNextHourWindow } from '../lib/rateLimiter';
 import { sendEmail, selectSender } from '../services/emailSender';
-import { prisma } from '../lib/prisma';
-import { connectDB, disconnectDB } from '../lib/prisma';
+import { prisma, connectDB, disconnectDB } from '../lib/prisma';
+import { reconcileOrphanedJobs } from './reconcile';
 import logger from '../lib/logger';
 
 /**
- * THE CORE EMAIL WORKER
- *
- * This is a separate Node.js process from the API server.
- * It connects to BullMQ (backed by Redis) and processes email jobs.
- *
- * Job lifecycle in this worker:
- *  1. BullMQ delivers job when delay expires
- *  2. Check rate limit (Redis atomic Lua)
- *     → If exceeded: re-enqueue for next hour, skip
- *  3. Check if campaign is still active
- *  4. Atomic CAS: UPDATE status SCHEDULED→PROCESSING (idempotency guard)
- *     → If 0 rows: another worker already claimed this, skip
- *  5. Select least-recently-used sender
- *  6. Send email via Nodemailer/Ethereal
- *  7. Update DB: status→SENT + previewUrl
- *     OR on failure: status→FAILED + errorMessage
+ * Ordering note: we CLAIM the row (CAS) BEFORE consuming a rate-limit slot.
+ * The reverse leaks slots — a job losing the CAS race would still burn a slot,
+ * silently lowering the effective hourly cap.
  */
 async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
   const { scheduledEmailId, campaignId, userId, recipientEmail, subject, body, maxPerHour } =
     job.data;
 
-  logger.info(
-    { jobId: job.id, scheduledEmailId, recipientEmail },
-    'Processing email job',
-  );
+  logger.info({ jobId: job.id, scheduledEmailId, recipientEmail }, 'Processing email job');
 
-  // ── Step 1: Check campaign is not cancelled ──────────────────────────────
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
     select: { status: true },
   });
 
   if (!campaign || campaign.status === 'CANCELLED') {
-    logger.info({ campaignId, scheduledEmailId }, 'Campaign cancelled, skipping job');
-    // Mark the email as cancelled
     await prisma.scheduledEmail.updateMany({
       where: { id: scheduledEmailId, status: { in: ['SCHEDULED', 'RESCHEDULED'] } },
       data: { status: 'CANCELLED' },
     });
+    logger.info({ campaignId, scheduledEmailId }, 'Campaign cancelled — skipping');
     return;
   }
 
-  // ── Step 2: Rate limit check ────────────────────────────────────────────
-  const redis = createRedisClient();
-  try {
-    const canSend = await checkAndIncrementRateLimit(redis, userId, maxPerHour);
-
-    if (!canSend) {
-      const delayMs = msUntilNextHourWindow();
-
-      logger.info(
-        { scheduledEmailId, userId, delayMs, recipientEmail },
-        'Rate limit reached — rescheduling to next hour window',
-      );
-
-      // Mark as RESCHEDULED in DB
-      await prisma.scheduledEmail.updateMany({
-        where: { id: scheduledEmailId, status: { in: ['SCHEDULED', 'RESCHEDULED'] } },
-        data: {
-          status: 'RESCHEDULED',
-          scheduledAt: new Date(Date.now() + delayMs),
-        },
-      });
-
-      // Re-enqueue with delay — same jobId is fine because BullMQ removes the
-      // current job once this processor function returns, so we use a suffixed ID.
-      await scheduleEmailJob(
-        { ...job.data },
-        delayMs,
-      );
-
-      return; // Return normally — do not throw, do not mark as failed
-    }
-  } finally {
-    await redis.quit();
-  }
-
-  // ── Step 3: Atomic CAS — claim this job (idempotency Layer 3) ───────────
-  const updatedCount = await prisma.$executeRaw`
+  // Atomic CAS claim. Columns are quoted: @@map renames the TABLE only, so
+  // Prisma columns stay camelCase and unquoted identifiers fold to lowercase.
+  const claimed = await prisma.$executeRaw`
     UPDATE scheduled_emails
-    SET status = 'PROCESSING', attempts = attempts + 1, updated_at = NOW()
+    SET status = 'PROCESSING'::"EmailStatus", "updatedAt" = NOW()
     WHERE id = ${scheduledEmailId}
-    AND status IN ('SCHEDULED', 'RESCHEDULED')
+      AND status IN ('SCHEDULED'::"EmailStatus", 'RESCHEDULED'::"EmailStatus")
   `;
 
-  if (updatedCount === 0) {
-    logger.warn(
-      { scheduledEmailId },
-      'Job already claimed by another worker — skipping (idempotency guard)',
-    );
+  if (claimed === 0) {
+    logger.warn({ scheduledEmailId }, 'Already claimed or terminal — skipping');
     return;
   }
 
-  // ── Step 4: Select sender (LRU) ──────────────────────────────────────────
+  const redis = getRedis();
+  const canSend = await checkAndIncrementRateLimit(redis, campaignId, maxPerHour);
+
+  if (!canSend) {
+    const n = (job.data.rescheduleCount ?? 0) + 1;
+    const delayMs = msUntilNextHourWindow() + n * config.worker.minEmailDelayMs;
+    const nextAt = new Date(Date.now() + delayMs);
+
+    await prisma.scheduledEmail.update({
+      where: { id: scheduledEmailId },
+      data: { status: 'RESCHEDULED', scheduledAt: nextAt },
+    });
+
+    // Distinct jobId REQUIRED: current job is still active and completed IDs
+    // are retained 24h, so reusing it would be silently dropped by BullMQ.
+    await scheduleEmailJob(
+      { ...job.data, rescheduleCount: n },
+      delayMs,
+      scheduledEmailId + ':r' + n,
+    );
+
+    logger.info({ scheduledEmailId, delayMs, nextAt }, 'Rate limited — rescheduled');
+    return;
+  }
+
+  const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 3);
   const sender = await selectSender(userId);
 
   if (!sender) {
-    logger.error({ userId, scheduledEmailId }, 'No active sender account found');
     await prisma.scheduledEmail.update({
       where: { id: scheduledEmailId },
       data: {
-        status: 'FAILED',
-        errorMessage: 'No active sender account configured. Please add a sender account.',
+        status: isFinalAttempt ? 'FAILED' : 'SCHEDULED',
+        errorMessage: 'No active sender account configured.',
+        attempts: { increment: 1 },
       },
     });
-    throw new Error('No active sender account'); // Will trigger BullMQ retry
+    throw new Error('No active sender account');
   }
 
-  // ── Step 5: Send email ───────────────────────────────────────────────────
   try {
     const result = await sendEmail({
       scheduledEmailId,
@@ -131,121 +100,81 @@ async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       smtp: sender.smtp,
     });
 
-    // ── Step 6: Mark SENT ────────────────────────────────────────────────
-    await prisma.scheduledEmail.update({
-      where: { id: scheduledEmailId },
-      data: {
-        status: 'SENT',
-        sentAt: new Date(),
-        senderAccountId: sender.id,
-        previewUrl: result.previewUrl,
-        errorMessage: null,
-      },
-    });
-
-    // Increment campaign sentCount
-    await prisma.campaign.update({
-      where: { id: campaignId },
-      data: { sentCount: { increment: 1 } },
-    });
+    await prisma.$transaction([
+      prisma.scheduledEmail.update({
+        where: { id: scheduledEmailId },
+        data: {
+          status: 'SENT',
+          sentAt: new Date(),
+          senderAccountId: sender.id,
+          previewUrl: result.previewUrl,
+          errorMessage: null,
+          attempts: { increment: 1 },
+        },
+      }),
+      prisma.campaign.update({
+        where: { id: campaignId },
+        data: { sentCount: { increment: 1 } },
+      }),
+    ]);
 
     logger.info(
-      {
-        scheduledEmailId,
-        recipientEmail,
-        messageId: result.messageId,
-        previewUrl: result.previewUrl,
-      },
-      'Email sent successfully',
+      { scheduledEmailId, recipientEmail, previewUrl: result.previewUrl },
+      'Email sent',
     );
   } catch (smtpErr) {
-    // ── Step 7: Mark FAILED (will be retried by BullMQ) ─────────────────
-    const errorMessage =
-      smtpErr instanceof Error ? smtpErr.message : 'Unknown SMTP error';
+    const errorMessage = smtpErr instanceof Error ? smtpErr.message : 'Unknown SMTP error';
 
-    logger.error(
-      { err: smtpErr, scheduledEmailId, recipientEmail },
-      'SMTP send failed',
-    );
-
+    // Only write terminal FAILED on the last attempt. Writing it early would
+    // make the CAS above fail on every retry, silently killing BullMQ retries.
     await prisma.scheduledEmail.update({
       where: { id: scheduledEmailId },
       data: {
-        status: 'FAILED',
+        status: isFinalAttempt ? 'FAILED' : 'SCHEDULED',
         errorMessage,
+        attempts: { increment: 1 },
       },
     });
 
-    await prisma.campaign.update({
-      where: { id: campaignId },
-      data: { failedCount: { increment: 1 } },
-    });
+    if (isFinalAttempt) {
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { failedCount: { increment: 1 } },
+      });
+    }
 
-    // Re-throw so BullMQ knows this job failed and should retry
+    logger.error({ err: smtpErr, scheduledEmailId, isFinalAttempt }, 'SMTP send failed');
     throw smtpErr;
   }
 }
 
-// ─── Worker startup ───────────────────────────────────────────────────────────
-
 async function startWorker(): Promise<void> {
   await connectDB();
+  await reconcileOrphanedJobs();
 
   const worker = new Worker<EmailJobData>(QUEUE_NAME, processEmailJob, {
     connection: createRedisClient(),
     concurrency: config.worker.concurrency,
-    // Stalled job detection: if a job is in "active" for > 30s without heartbeat,
-    // move it back to failed so it can be retried
     stalledInterval: 30_000,
     maxStalledCount: 1,
   });
 
-  worker.on('completed', (job) => {
-    logger.info({ jobId: job.id }, 'Job completed');
-  });
-
-  worker.on('failed', (job, err) => {
-    logger.error(
-      { jobId: job?.id, err, attemptsMade: job?.attemptsMade },
-      'Job failed',
-    );
-
-    // After all retries exhausted, ensure DB reflects FAILED status
-    if (job && job.attemptsMade >= (job.opts.attempts ?? 3)) {
-      prisma.scheduledEmail
-        .update({
-          where: { id: job.data.scheduledEmailId },
-          data: {
-            status: 'FAILED',
-            errorMessage: err instanceof Error ? err.message : 'Max retries exceeded',
-          },
-        })
-        .catch((dbErr) => logger.error({ dbErr }, 'Failed to update terminal failure'));
-    }
-  });
-
-  worker.on('stalled', (jobId) => {
-    logger.warn({ jobId }, 'Job stalled — will be retried');
-  });
-
-  worker.on('error', (err) => {
-    logger.error({ err }, 'Worker error');
-  });
+  worker.on('completed', (job) => logger.info({ jobId: job.id }, 'Job completed'));
+  worker.on('failed', (job, err) =>
+    logger.error({ jobId: job?.id, err, attemptsMade: job?.attemptsMade }, 'Job failed'),
+  );
+  worker.on('stalled', (jobId) => logger.warn({ jobId }, 'Job stalled — will retry'));
+  worker.on('error', (err) => logger.error({ err }, 'Worker error'));
 
   logger.info(
-    {
-      queue: QUEUE_NAME,
-      concurrency: config.worker.concurrency,
-    },
+    { queue: QUEUE_NAME, concurrency: config.worker.concurrency },
     'Email worker started',
   );
 
-  // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down worker...');
     await worker.close();
     await disconnectDB();
-    logger.info('Worker shut down gracefully');
     process.exit(0);
   };
 

@@ -1,4 +1,4 @@
-import { Queue } from 'bullmq';
+﻿import { Queue } from 'bullmq';
 import { createRedisClient } from './redis';
 import logger from './logger';
 
@@ -12,6 +12,7 @@ export interface EmailJobData {
   subject: string;
   body: string;
   maxPerHour: number;
+  rescheduleCount?: number; // Incremented each time a rate limit defers this job
 }
 
 let emailQueueInstance: Queue<EmailJobData> | null = null;
@@ -44,25 +45,33 @@ export function getEmailQueue(): Queue<EmailJobData> {
 
 /**
  * Schedules a single email job with a computed delay.
- * jobId = scheduledEmailId (cuid from DB) — ensures idempotency at BullMQ level.
+ *
+ * jobId defaults to scheduledEmailId (cuid from DB), which gives BullMQ-level
+ * idempotency: enqueueing the same email twice is silently ignored.
+ *
+ * When a job is deferred by the rate limiter, the worker MUST pass a distinct
+ * jobIdOverride (e.g. `${id}:r1`). The original job is still `active` at that
+ * moment, and completed job IDs are retained for 24h by removeOnComplete —
+ * so reusing the ID would cause BullMQ to drop the re-enqueue silently and the
+ * email would never be sent. Duplicate-send safety does not depend on the jobId:
+ * it is enforced by the DB status CAS and the unique
+ * (campaignId, recipientEmail) constraint.
  */
 export async function scheduleEmailJob(
   data: EmailJobData,
   delayMs: number,
+  jobIdOverride?: string,
 ): Promise<void> {
   const queue = getEmailQueue();
+  const jobId = jobIdOverride ?? data.scheduledEmailId;
 
   await queue.add(QUEUE_NAME, data, {
-    jobId: data.scheduledEmailId, // Duplicate jobId → BullMQ ignores silently
+    jobId,
     delay: delayMs,
   });
 
   logger.debug(
-    {
-      jobId: data.scheduledEmailId,
-      recipientEmail: data.recipientEmail,
-      delayMs,
-    },
+    { jobId, recipientEmail: data.recipientEmail, delayMs },
     'Email job scheduled',
   );
 }
