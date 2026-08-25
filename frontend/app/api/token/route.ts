@@ -1,6 +1,6 @@
 ﻿import { getServerSession } from "next-auth";
 import { SignJWT } from "jose";
-import { authOptions } from "../auth/[...nextauth]/route";
+import { authOptions } from "@/lib/auth";
 
 /**
  * Mints a short-lived HS256 token for the Express API.
