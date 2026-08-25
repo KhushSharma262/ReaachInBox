@@ -1,5 +1,5 @@
-import { Request, Response, NextFunction } from 'express';
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+﻿import { Request, Response, NextFunction } from 'express';
+import { jwtVerify } from 'jose';
 import { config } from '../../config';
 import { prisma } from '../../lib/prisma';
 import { Errors } from './errorHandler';

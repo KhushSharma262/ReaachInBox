@@ -1,8 +1,8 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
 import logger from '../../lib/logger';
 
-// ─── Consistent API error response shape ─────────────────────────────────────
+// â”€â”€â”€ Consistent API error response shape â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface ApiError {
   success: false;
@@ -24,16 +24,16 @@ export function createErrorResponse(
   };
 }
 
-// ─── Centralized error handler middleware ─────────────────────────────────────
+// â”€â”€â”€ Centralized error handler middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function errorHandler(
   err: unknown,
-  req: Request,
+  _req: Request,
   res: Response,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _next: NextFunction,
 ): void {
-  // Zod validation errors → 400
+  // Zod validation errors â†’ 400
   if (err instanceof ZodError) {
     res.status(400).json(
       createErrorResponse('VALIDATION_ERROR', 'Request validation failed', {
@@ -46,7 +46,7 @@ export function errorHandler(
     return;
   }
 
-  // AppError (our custom errors) → use their status code
+  // AppError (our custom errors) â†’ use their status code
   if (err instanceof AppError) {
     res
       .status(err.statusCode)
@@ -54,7 +54,7 @@ export function errorHandler(
     return;
   }
 
-  // Unknown errors → 500, don't leak internals
+  // Unknown errors â†’ 500, don't leak internals
   logger.error({ err }, 'Unhandled error');
   res
     .status(500)
@@ -66,7 +66,7 @@ export function errorHandler(
     );
 }
 
-// ─── Custom error class ───────────────────────────────────────────────────────
+// â”€â”€â”€ Custom error class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export class AppError extends Error {
   constructor(

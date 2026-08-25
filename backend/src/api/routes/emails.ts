@@ -1,4 +1,5 @@
-import { Router, Request, Response, NextFunction } from 'express';
+﻿import { Router, Request, Response, NextFunction } from 'express';
+import { EmailStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { requireAuth } from '../middleware/auth';
 import { Errors } from '../middleware/errorHandler';
@@ -7,8 +8,16 @@ import { paginationSchema } from '../validators/schemas';
 const router = Router();
 
 // Status groups for cleaner queries
-const SCHEDULED_STATUSES = ['SCHEDULED', 'RESCHEDULED', 'PROCESSING'] as const;
-const COMPLETED_STATUSES = ['SENT', 'FAILED', 'CANCELLED'] as const;
+const SCHEDULED_STATUSES: EmailStatus[] = [
+  EmailStatus.SCHEDULED,
+  EmailStatus.RESCHEDULED,
+  EmailStatus.PROCESSING,
+];
+const COMPLETED_STATUSES: EmailStatus[] = [
+  EmailStatus.SENT,
+  EmailStatus.FAILED,
+  EmailStatus.CANCELLED,
+];
 
 /**
  * GET /api/emails/scheduled
