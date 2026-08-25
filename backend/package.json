@@ -1,8 +1,12 @@
 {
   "name": "reachinbox-backend",
   "version": "1.0.0",
-  "description": "ReachInbox Email Scheduler â€” Express API + BullMQ Worker",
+  "description": "ReachInbox Email Scheduler — Express API + BullMQ Worker",
   "main": "dist/server.js",
+  "resolutions": {
+    "@types/express": "4.17.21",
+    "@types/express-serve-static-core": "4.19.5"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "dev:worker": "tsx watch src/worker/index.ts",
