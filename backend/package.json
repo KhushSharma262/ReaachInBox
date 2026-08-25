@@ -1,13 +1,13 @@
 {
   "name": "reachinbox-backend",
   "version": "1.0.0",
-  "description": "ReachInbox Email Scheduler — Express API + BullMQ Worker",
+  "description": "ReachInbox Email Scheduler â€” Express API + BullMQ Worker",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "dev:worker": "tsx watch src/worker/index.ts",
-    "build": "tsc",
-    "start": "node dist/server.js",
+    "build": "prisma generate && tsc",
+    "start": "npx prisma migrate deploy && node dist/server.js",
     "start:worker": "node dist/worker/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
