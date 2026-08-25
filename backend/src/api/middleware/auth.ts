@@ -1,9 +1,9 @@
-﻿import { Request, Response, NextFunction } from 'express';
-import { jwtVerify } from 'jose';
-import { config } from '../../config';
-import { prisma } from '../../lib/prisma';
-import { Errors } from './errorHandler';
-import logger from '../../lib/logger';
+﻿import { Request, Response, NextFunction } from "express";
+import { jwtVerify } from "jose";
+import { config } from "../../config";
+import { prisma } from "../../lib/prisma";
+import { Errors } from "./errorHandler";
+import logger from "../../lib/logger";
 
 // Extend Express Request to include authenticated user
 declare global {
@@ -20,11 +20,12 @@ declare global {
 }
 
 /**
- * Validates the NextAuth session token sent from the frontend.
+ * Verifies the API token minted by the Next.js /api/token route.
  *
- * NextAuth v5 issues a JWT stored in an HttpOnly cookie (session-token).
- * We verify it using the shared AUTH_SECRET. Once verified, we load the
- * full user from PostgreSQL and attach it to req.user.
+ * NextAuth v4 stores its own session as an encrypted JWE, which this service
+ * cannot verify with a plain signature check. Rather than couple the API to
+ * NextAuth internals, the frontend exchanges its session for a short-lived
+ * HS256 JWT signed with the shared AUTH_SECRET, sent as a Bearer token.
  */
 export async function requireAuth(
   req: Request,
@@ -32,60 +33,60 @@ export async function requireAuth(
   next: NextFunction,
 ): Promise<void> {
   try {
-    // NextAuth sends the session token as a cookie or Authorization header
     const sessionToken =
-      req.cookies?.['authjs.session-token'] ||
-      req.cookies?.['next-auth.session-token'] ||
-      req.headers.authorization?.replace('Bearer ', '');
+      req.headers.authorization?.replace("Bearer ", "") ||
+      req.cookies?.["next-auth.session-token"];
 
     if (!sessionToken) {
       throw Errors.unauthorized();
     }
 
-    // Verify JWT signature using AUTH_SECRET
     const secret = new TextEncoder().encode(config.auth.secret);
     const { payload } = await jwtVerify(sessionToken, secret, {
-      algorithms: ['HS256'],
+      algorithms: ["HS256"],
+      issuer: "reachinbox-web",
+      audience: "reachinbox-api",
     });
 
-    if (!payload.email || typeof payload.email !== 'string') {
+    if (!payload.email || typeof payload.email !== "string") {
       throw Errors.unauthorized();
     }
 
-    // Look up the user in PostgreSQL
-    const user = await prisma.user.findUnique({
+    // Upsert: identity is established by the verified token, so the local row
+    // is created lazily on first API call rather than requiring a signup step.
+    const user = await prisma.user.upsert({
       where: { email: payload.email },
+      update: {},
+      create: {
+        email: payload.email,
+        name: typeof payload.name === "string" ? payload.name : null,
+        avatarUrl: typeof payload.picture === "string" ? payload.picture : null,
+      },
       select: { id: true, email: true, name: true, avatarUrl: true },
     });
-
-    if (!user) {
-      throw Errors.unauthorized();
-    }
 
     req.user = user;
     next();
   } catch (err) {
-    if ((err as { name?: string }).name === 'JWTExpired') {
-      res.status(401).json({ success: false, error: { code: 'TOKEN_EXPIRED', message: 'Session expired. Please log in again.' } });
+    if ((err as { name?: string }).name === "JWTExpired") {
+      res.status(401).json({
+        success: false,
+        error: { code: "TOKEN_EXPIRED", message: "Session expired. Please log in again." },
+      });
       return;
     }
-    if ((err as { statusCode?: number }).statusCode === 401) {
-      res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
-      return;
-    }
-    logger.error({ err }, 'Auth middleware error');
-    res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+    logger.warn({ err }, "Auth rejected");
+    res.status(401).json({
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "Authentication required" },
+    });
   }
 }
 
 /**
  * Validates that a resource belongs to the authenticated user.
- * Used inline in route handlers.
  */
-export function assertOwnership(
-  resourceUserId: string,
-  requestUserId: string,
-): void {
+export function assertOwnership(resourceUserId: string, requestUserId: string): void {
   if (resourceUserId !== requestUserId) {
     throw Errors.forbidden();
   }

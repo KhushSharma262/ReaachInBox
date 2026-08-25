@@ -7,8 +7,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+    <main className="flex min-h-screen items-center justify-center bg-[#FAFAFA] px-4">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-200/80 bg-white p-8 shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">ReachInbox</h1>
         <p className="mt-2 text-sm text-slate-500">
           Schedule and send email campaigns at a controlled rate.
@@ -20,7 +20,7 @@ export default function LoginPage() {
             signIn("google", { callbackUrl: "/dashboard" });
           }}
           disabled={loading}
-          className="mt-8 flex w-full items-center justify-center gap-3 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          className="mt-8 flex w-full items-center justify-center gap-3 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-[#FAFAFA] disabled:cursor-not-allowed disabled:opacity-60"
         >
           <svg className="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
             <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>

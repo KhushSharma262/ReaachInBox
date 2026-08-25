@@ -1,4 +1,4 @@
-/**
+﻿/**
  * seed-senders.ts
  * Creates 3 Ethereal SMTP test accounts and seeds them into the database.
  * Run with: npm run seed:senders
@@ -16,7 +16,7 @@ async function seedSenders(): Promise<void> {
 
   // Find the first user in the database
   const user = await prisma.user.findFirst({
-    orderBy: { createdAt: 'asc' },
+    orderBy: { createdAt: 'desc' },
     select: { id: true, email: true },
   });
 
@@ -71,13 +71,13 @@ async function seedSenders(): Promise<void> {
   }
 
   // Print env var suggestions for .env
-  logger.info('Add these to your .env file (optional — DB already has the values):');
+  logger.info('Add these to your .env file (optional â€” DB already has the values):');
   accounts.forEach((acc, i) => {
     console.log(`ETHEREAL_USER_${i + 1}="${acc.user}"`);
     console.log(`ETHEREAL_PASS_${i + 1}="${acc.pass}"`);
   });
 
-  logger.info('✅ Sender seeding complete');
+  logger.info('âœ… Sender seeding complete');
   await prisma.$disconnect();
 }
 

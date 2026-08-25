@@ -5,7 +5,7 @@ import { scheduleEmailJob } from "../lib/queue";
 const prisma = new PrismaClient();
 
 async function main() {
-  const user = await prisma.user.findFirstOrThrow();
+  const user = await prisma.user.findFirstOrThrow({ orderBy: { createdAt: "desc" } })
 
   const campaign = await prisma.campaign.create({
     data: {
