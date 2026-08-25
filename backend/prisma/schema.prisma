@@ -1,0 +1,177 @@
+// This is your Prisma schema file.
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User — authenticated via Google OAuth (NextAuth)
+// ─────────────────────────────────────────────────────────────────────────────
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  avatarUrl String?
+  googleId  String?  @unique
+
+  campaigns      Campaign[]
+  senderAccounts SenderAccount[]
+
+  // NextAuth adapter fields
+  accounts Account[]
+  sessions Session[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+// NextAuth adapter tables
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SenderAccount — SMTP credentials for sending emails
+// Supports multiple senders per user; selected via LRU
+// ─────────────────────────────────────────────────────────────────────────────
+model SenderAccount {
+  id          String  @id @default(cuid())
+  userId      String
+  displayName String
+  email       String
+  smtpHost    String
+  smtpPort    Int
+  smtpUser    String
+  smtpPass    String  // Stored as-is for Ethereal; encrypt in production
+  isActive    Boolean @default(true)
+  lastUsedAt  DateTime @default(now())
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scheduledEmails ScheduledEmail[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, isActive, lastUsedAt])
+  @@map("sender_accounts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Campaign — a bulk email campaign
+// One campaign → many ScheduledEmails (one per recipient)
+// ─────────────────────────────────────────────────────────────────────────────
+model Campaign {
+  id               String         @id @default(cuid())
+  userId           String
+  subject          String
+  body             String         @db.Text
+  status           CampaignStatus @default(ACTIVE)
+  totalRecipients  Int
+  sentCount        Int            @default(0)
+  failedCount      Int            @default(0)
+  scheduledStartAt DateTime
+  minDelayMs       Int            // Minimum delay between emails in milliseconds
+  maxPerHour       Int            // Maximum emails per hour (per this campaign)
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scheduledEmails ScheduledEmail[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("campaigns")
+}
+
+enum CampaignStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ScheduledEmail — one email to one recipient, part of a campaign
+// id is used as the BullMQ jobId for idempotency
+// ─────────────────────────────────────────────────────────────────────────────
+model ScheduledEmail {
+  id              String      @id @default(cuid())
+  campaignId      String
+  senderAccountId String?     // Set when the worker picks it up
+  recipientEmail  String
+  status          EmailStatus @default(SCHEDULED)
+  scheduledAt     DateTime    // When this specific email should be sent
+  sentAt          DateTime?
+  errorMessage    String?     @db.Text
+  previewUrl      String?     // Ethereal preview URL after successful send
+  attempts        Int         @default(0)
+
+  campaign      Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  senderAccount SenderAccount? @relation(fields: [senderAccountId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Idempotency constraint: one email per recipient per campaign
+  @@unique([campaignId, recipientEmail])
+
+  // Query indexes
+  @@index([campaignId, status])
+  @@index([scheduledAt])
+  @@index([status, scheduledAt])
+  @@map("scheduled_emails")
+}
+
+enum EmailStatus {
+  SCHEDULED    // Created, job in BullMQ, waiting for time
+  PROCESSING   // Worker has claimed this job (CAS update)
+  SENT         // Successfully delivered via SMTP
+  FAILED       // All retries exhausted
+  RESCHEDULED  // Rate limit hit; re-enqueued for next hour window
+  CANCELLED    // User cancelled the campaign
+}
