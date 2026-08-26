@@ -66,7 +66,7 @@ async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     await scheduleEmailJob(
       { ...job.data, rescheduleCount: n },
       delayMs,
-      scheduledEmailId + ':r' + n,
+      scheduledEmailId + '-r' + n,
     );
 
     logger.info({ scheduledEmailId, delayMs, nextAt }, 'Rate limited — rescheduled');
