@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -18,10 +18,15 @@ import emailRoutes from './api/routes/emails';
 import uploadRoutes from './api/routes/upload';
 import senderRoutes from './api/routes/senders';
 
+// Worker — started in-process since this Render deployment doesn't run
+// a separate worker service (free-tier constraint). Importing this file
+// boots the BullMQ worker alongside the API in the same process.
+import './worker';
+
 const app = express();
 app.disable('x-powered-by');
 
-// â”€â”€â”€ Security middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Security middleware ─────────────────────────────────────────
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -37,7 +42,7 @@ app.use(
   }),
 );
 
-// â”€â”€â”€ Body parsing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Body parsing ─────────────────────────────────────────────────
 // API rate limiting.
 // Distinct from the EMAIL rate limiter: this protects the API surface from
 // abuse, while the Redis limiter in the worker governs outbound send volume.
@@ -64,7 +69,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 app.use(cookieParser());
 
-// â”€â”€â”€ HTTP request logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── HTTP request logging ─────────────────────────────────────────
 app.use(
   morgan('combined', {
     stream: {
@@ -74,7 +79,7 @@ app.use(
   }),
 );
 
-// â”€â”€â”€ Health check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Health check ─────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -83,14 +88,14 @@ app.get('/health', (_req, res) => {
   });
 });
 
-// â”€â”€â”€ API Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── API Routes ─────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/campaigns', writeLimiter, campaignRoutes);
 app.use('/api/emails', emailRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/senders', senderRoutes);
 
-// 404 handler â€” must be after all routes
+// 404 handler — must be after all routes
 app.use((_req, res) => {
   res.status(404).json({
     success: false,
@@ -98,10 +103,10 @@ app.use((_req, res) => {
   });
 });
 
-// â”€â”€â”€ Centralized error handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Centralized error handler ─────────────────────────────────────
 app.use(errorHandler);
 
-// â”€â”€â”€ Start server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Start server ─────────────────────────────────────────────────
 async function start(): Promise<void> {
   try {
     await connectDB();
