@@ -19,8 +19,8 @@ import uploadRoutes from './api/routes/upload';
 import senderRoutes from './api/routes/senders';
 
 // Worker — started in-process since this Render deployment doesn't run
-// a separate worker service (free-tier constraint). Importing this file
-// boots the BullMQ worker alongside the API in the same process.
+// a separate worker service (free-tier constraint). This file self-starts
+// on import (see startWorker().catch(...) at its bottom).
 import './worker';
 
 const app = express();
@@ -36,16 +36,13 @@ app.use(
 app.use(
   cors({
     origin: config.urls.frontend,
-    credentials: true, // Required for cookie-based auth
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   }),
 );
 
 // ─── Body parsing ─────────────────────────────────────────────────
-// API rate limiting.
-// Distinct from the EMAIL rate limiter: this protects the API surface from
-// abuse, while the Redis limiter in the worker governs outbound send volume.
 const readLimiter = rateLimit({
   windowMs: 60000,
   limit: 120,
@@ -54,7 +51,6 @@ const readLimiter = rateLimit({
   message: { success: false, error: { code: 'RATE_LIMITED', message: 'Too many requests.' } },
 });
 
-// Writes are the expensive path: one campaign can enqueue thousands of jobs.
 const writeLimiter = rateLimit({
   windowMs: 60000,
   limit: 10,
@@ -118,7 +114,6 @@ async function start(): Promise<void> {
       );
     });
 
-    // Graceful shutdown
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Received shutdown signal');
       server.close(async () => {
