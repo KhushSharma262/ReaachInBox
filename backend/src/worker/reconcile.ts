@@ -54,7 +54,7 @@ export async function reconcileOrphanedJobs(): Promise<number> {
     };
 
     const delayMs = Math.max(0, row.scheduledAt.getTime() - Date.now());
-    await scheduleEmailJob(data, delayMs, row.id + ':rec' + Date.now());
+    await scheduleEmailJob(data, delayMs, row.id + '-rec' + Date.now());
     recovered++;
   }
 
